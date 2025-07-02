@@ -1,13 +1,16 @@
+const dotenv = require('dotenv');
+dotenv.config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const morgan = require('morgan');
-require('dotenv').config();
+
 
 // Import routes
 const userRoutes = require('./routes/userRoutes');
 const memoRoutes = require('./routes/memoRoutes');
 const chatRoutes = require('./routes/chatRoutes');
+const authRoutes = require('./routes/authRoutes');
 
 // Initialize express app
 const app = express();
@@ -21,6 +24,7 @@ app.use(morgan('dev'));
 app.use('/api/user', userRoutes);
 app.use('/api/memo', memoRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/auth', authRoutes);
 
 // Database connection
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://root:lpk5d757@test-db-mongodb.ns-sdllvr4b.svc:27017';

@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
-
+const AuthUser = require('../models/authUserModel');
 // JWT secret key
 const JWT_SECRET = 'memo-app-secret-key';
 
@@ -26,7 +26,9 @@ const protect = async (req, res, next) => {
 
             // Find user by id
             req.user = await User.findById(decoded.id).select('-password');
-
+            if (!req.user) {
+                req.user = await AuthUser.findById(decoded.id);
+            }
             if (!req.user) {
                 return res.status(401).json({
                     code: 401,
