@@ -1,4 +1,5 @@
 const axios = require('axios');
+const WebSocket = require('ws');
 const ChatSession = require('../models/chatSessionModel');
 
 // 讯飞星火大模型 API 配置
@@ -64,7 +65,7 @@ exports.chat = async (req, res) => {
                 await session.save();
             }
         } else {
-            const title = messages[0].content.substring(0, 20);
+            const title = messages[1].content.substring(0, 20);
             session = await ChatSession.create({
                 user: userId,
                 title: title,
@@ -81,6 +82,120 @@ exports.chat = async (req, res) => {
     }
 };
 
+exports.handleChatStream = async function (ws, message) {
+    let payload;
+    try {
+        payload = JSON.parse(message);
+    } catch (e) {
+        ws.send(JSON.stringify({ error: '消息格式错误' }));
+        ws.close();
+        return;
+    }
+
+    const { messages, model = 'x1', sessionId, ...rest } = payload;
+    let userId = ws.userId;
+
+    // 健壮校验
+    const mongoose = require('mongoose');
+    const { ObjectId } = mongoose.Types;
+    if (!userId || !ObjectId.isValid(userId)) {
+        ws.send(JSON.stringify({ error: '暂未登录' }));
+        ws.close();
+        return;
+    }
+    userId = new ObjectId(userId);
+
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+        ws.send(JSON.stringify({ error: 'messages 不能为空且必须为数组' }));
+        ws.close();
+        return;
+    }
+
+    try {
+        const currentApiKey = getNextApiKey();
+
+        const sparkPayload = {
+            model,
+            messages,
+            stream: true, // 开启流式
+            ...rest
+        };
+
+        const response = await axios.post(
+            SPARK_API_URL,
+            sparkPayload,
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentApiKey}`
+                },
+                responseType: 'stream'
+            }
+        );
+
+        let fullContent = '';
+        let aiMessage = null;
+        let session = null;
+
+        response.data.on('data', async (chunk) => {
+            const lines = chunk.toString().split('\n').filter(Boolean);
+            for (const line of lines) {
+                console.log('line', line)
+                // 结束标志健壮处理
+                if (line.replace(/\s/g, '') === 'data:[DONE]') {
+                    const assistantMsg = aiMessage || { role: 'assistant', content: fullContent };
+                    console.log(' putout：', assistantMsg)
+                    if (sessionId) {
+                        session = await ChatSession.findOne({ _id: sessionId, user: userId });
+                        if (session) {
+                            session.messages.push(...messages.slice(session.messages.length));
+                            session.messages.push(assistantMsg);
+                            await session.save();
+                        }
+                    } else {
+                        const title = messages[1]?.content?.substring(0, 20) || '新会话';
+                        session = await ChatSession.create({
+                            user: userId,
+                            title: title,
+                            messages: [...messages, assistantMsg]
+                        });
+                    }
+                    console.log(`保存历史：content: ${fullContent}, sessionId:${session?._id}`)
+                    ws.send(JSON.stringify({ done: true, content: fullContent, sessionId: session?._id }));
+                    ws.close();
+                    return;
+                }
+                try {
+                    const data = JSON.parse(line.replace(/^data:/, ''));
+                    const delta = data.choices?.[0]?.delta;
+                    if (delta?.content) {
+                        fullContent += delta.content;
+                        ws.send(JSON.stringify({ content: delta.content }));
+                    }
+                    if (data.choices?.[0]?.message) {
+                        aiMessage = data.choices[0].message;
+                    }
+                } catch (e) {
+                    // 忽略解析失败
+                }
+            }
+        });
+
+        response.data.on('end', () => {
+            ws.send(JSON.stringify({ done: true, content: fullContent, sessionId: session?._id }));
+            ws.close();
+        });
+
+        response.data.on('error', (err) => {
+            ws.send(JSON.stringify({ error: err.message }));
+            ws.close();
+        });
+
+    } catch (error) {
+        ws.send(JSON.stringify({ error: error.message }));
+        ws.close();
+    }
+};
 // 获取会话列表
 exports.getChatSessions = async (req, res) => {
     try {
